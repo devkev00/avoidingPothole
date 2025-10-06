@@ -1,0 +1,176 @@
+"""
+포트홀 객체
+"""
+import pygame
+import math
+from config import *
+
+
+class Pothole:
+    def __init__(self, x, y, radius):
+        """
+        포트홀 초기화
+
+        Args:
+            x, y: 중심 위치
+            radius: 반경
+        """
+        self.x = x
+        self.y = y
+        self.radius = radius
+
+    def check_collision(self, wheel_positions):
+        """
+        바퀴와 포트홀의 충돌 검사
+
+        Args:
+            wheel_positions: [(x, y), ...] 바퀴 위치 리스트
+
+        Returns:
+            dict: {
+                'collision': bool,
+                'wheel_index': int (충돌한 바퀴 인덱스, 없으면 -1),
+                'distance': float (가장 가까운 바퀴까지의 거리)
+            }
+        """
+        min_distance = float('inf')
+        collision_wheel = -1
+
+        for i, (wx, wy) in enumerate(wheel_positions):
+            distance = math.sqrt((wx - self.x) ** 2 + (wy - self.y) ** 2)
+
+            if distance < min_distance:
+                min_distance = distance
+
+            # 바퀴가 포트홀에 들어갔는지 확인 (약간의 마진 포함)
+            if distance < self.radius + 5:  # 5픽셀 마진
+                collision_wheel = i
+
+        return {
+            'collision': collision_wheel != -1,
+            'wheel_index': collision_wheel,
+            'distance': min_distance
+        }
+
+    def classify_position(self, vehicle):
+        """
+        포트홀이 차량의 어느 위치에 있는지 분류
+
+        Args:
+            vehicle: Vehicle 객체
+
+        Returns:
+            str: 'SAFE_PASS', 'AVOID_LEFT', 'AVOID_RIGHT', 'AVOID_CENTER'
+        """
+        wheels = vehicle.get_wheel_positions()
+
+        # 각 바퀴와 포트홀 간의 거리 계산
+        distances = []
+        for wx, wy in wheels:
+            dist = math.sqrt((wx - self.x) ** 2 + (wy - self.y) ** 2)
+            distances.append(dist)
+
+        min_distance = min(distances)
+        min_wheel_idx = distances.index(min_distance)
+
+        # 안전 마진 고려
+        safety_threshold = self.radius + SAFETY_MARGIN
+
+        # 모든 바퀴가 안전 거리 밖이면 SAFE_PASS
+        if all(d > safety_threshold for d in distances):
+            return 'SAFE_PASS'
+
+        # 바퀴 인덱스: 0=앞우, 1=앞좌, 2=뒤우, 3=뒤좌
+        if min_wheel_idx in [1, 3]:  # 좌측 바퀴
+            return 'AVOID_RIGHT'
+        elif min_wheel_idx in [0, 2]:  # 우측 바퀴
+            return 'AVOID_LEFT'
+        else:
+            return 'AVOID_CENTER'
+
+    def is_between_wheels(self, vehicle):
+        """
+        포트홀이 바퀴 사이에 안전하게 위치하는지 확인
+
+        Returns:
+            bool: 바퀴 사이 안전하게 있으면 True (회피 불필요)
+        """
+        wheels = vehicle.get_wheel_positions()
+
+        # 바퀴 간격 계산 (좌우 바퀴 사이 거리)
+        from config import TRACK_WIDTH
+        wheel_gap = TRACK_WIDTH
+
+        # 1. 포트홀 크기만 확인: 바퀴 간격의 40%보다 작으면 통과 가능
+        max_safe_radius = wheel_gap * 0.4
+        if self.radius > max_safe_radius:
+            return False  # 너무 큰 포트홀 - 회피 필요
+
+        # 2. 포트홀이 바퀴 경로와 겹치는지만 확인
+        front_left_y = wheels[1][1]
+        front_right_y = wheels[0][1]
+
+        # 각 바퀴와의 거리 확인
+        for wx, wy in wheels:
+            dist = math.sqrt((wx - self.x) ** 2 + (wy - self.y) ** 2)
+            # 바퀴와 포트홀이 실제로 충돌하는지만 확인 (매우 가까운 경우)
+            if dist < self.radius + 5:
+                return False  # 바퀴에 닿음
+
+        # 작은 포트홀이고 바퀴에 닿지 않음 - 통과 가능
+        return True
+
+    def draw(self, screen, camera, is_detected=False, vehicle=None):
+        """
+        포트홀 그리기
+
+        Args:
+            screen: Pygame surface
+            camera: Camera 객체
+            is_detected: 센서에 감지되었는지 여부
+            vehicle: Vehicle 객체 (통과 가능 여부 표시용)
+        """
+        screen_pos = camera.world_to_screen((self.x, self.y))
+
+        # 포트홀 그리기 (어두운 원)
+        pygame.draw.circle(screen, BLACK, screen_pos, int(self.radius))
+
+        # 감지 여부에 따른 테두리 색상
+        if is_detected:
+            # 크기에 따른 위험도 표시
+            if self.radius > 30:
+                border_color = RED  # 큰 포트홀 (차선 변경 필요)
+                border_width = 4
+            else:
+                border_color = ORANGE  # 중간 포트홀 (차선 내 회피)
+                border_width = 3
+        else:
+            border_color = (100, 100, 100)  # 미감지
+            border_width = 2
+
+        pygame.draw.circle(screen, border_color, screen_pos, int(self.radius), border_width)
+
+        # 디버그 모드: 상세 정보 표시
+        if DEBUG_MODE:
+            safety_radius = int(self.radius + SAFETY_MARGIN)
+            pygame.draw.circle(screen, (255, 100, 0), screen_pos, safety_radius, 1)
+
+            # 포트홀 크기 및 통과 가능 여부 텍스트
+            font = pygame.font.Font(None, 16)
+
+            # 통과 가능 여부 확인
+            can_pass = False
+            if vehicle is not None and is_detected:
+                can_pass = self.is_between_wheels(vehicle)
+
+            # 텍스트 색상
+            if can_pass:
+                text_color = (0, 255, 0)  # 녹색 - 통과 가능
+                status = "PASS"
+            else:
+                text_color = WHITE
+                status = f"R:{int(self.radius)}"
+
+            size_text = font.render(status, True, text_color)
+            text_pos = (screen_pos[0] - 15, screen_pos[1] + int(self.radius) + 5)
+            screen.blit(size_text, text_pos)
