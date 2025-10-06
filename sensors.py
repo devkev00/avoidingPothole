@@ -75,6 +75,21 @@ class PotholeSensor:
             return self.detected_potholes[0]
         return None
 
+    def get_potholes_in_range(self, max_distance):
+        """
+        전방 일정 거리 내의 모든 포트홀 반환
+
+        Args:
+            max_distance: 최대 거리 (픽셀)
+
+        Returns:
+            list: [{'pothole': Pothole, 'distance': float}, ...]
+        """
+        return [
+            p for p in self.detected_potholes
+            if p['distance'] <= max_distance
+        ]
+
     def draw(self, screen, camera):
         """
         센서 범위 및 감지 포트홀 시각화

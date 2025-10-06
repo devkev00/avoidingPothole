@@ -41,8 +41,9 @@ class TrafficManager:
             x_offset = random.uniform(-300, 800)
             x = self.player.x + x_offset
 
-            # 랜덤 차선
-            lane_id = random.randint(1, self.road.num_lanes)
+            # 랜덤 차선 (2번 차선 제외)
+            available_lanes = [i for i in range(1, self.road.num_lanes + 1) if i != 2]
+            lane_id = random.choice(available_lanes)
             y = self.road.get_lane_center_at_x(x, lane_id)
 
             if y is not None:
@@ -137,8 +138,9 @@ class TrafficManager:
             # 30% 확률로 뒤쪽에 생성
             spawn_x = self.player.x - self.spawn_distance_behind
 
-        # 랜덤 차선
-        lane_id = random.randint(1, self.road.num_lanes)
+        # 랜덤 차선 (2번 차선 제외)
+        available_lanes = [i for i in range(1, self.road.num_lanes + 1) if i != 2]
+        lane_id = random.choice(available_lanes)
         spawn_y = self.road.get_lane_center_at_x(spawn_x, lane_id)
 
         if spawn_y is None:

@@ -163,6 +163,14 @@ class Simulation:
                 elif event.key == pygame.K_DOWN:
                     self.cruise_speed = max(30, self.cruise_speed - 10)
 
+                # 1, 2, 3: 차선 변경
+                elif event.key == pygame.K_1:
+                    self.path_planner.target_lane = 1
+                elif event.key == pygame.K_2:
+                    self.path_planner.target_lane = 2
+                elif event.key == pygame.K_3:
+                    self.path_planner.target_lane = 3
+
                 # D: 디버그 모드 토글
                 elif event.key == pygame.K_d:
                     global DEBUG_MODE
@@ -188,28 +196,34 @@ class Simulation:
         # NPC 차량 업데이트
         self.traffic_manager.update(dt)
 
-        # 포트홀 감지
-        potholes = self.pothole_generator.get_potholes()
-        self.sensor.detect_potholes(potholes)
+        # 서브스텝을 사용한 더 빠른 경로 업데이트
+        # 한 프레임을 2개의 서브스텝으로 나눠서 경로를 더 자주 업데이트
+        num_substeps = 4
+        substep_dt = dt / num_substeps
 
-        # 경로 업데이트 (포트홀 감지 후 업데이트)
-        self.update_path()
+        for _ in range(num_substeps):
+            # 포트홀 감지
+            potholes = self.pothole_generator.get_potholes()
+            self.sensor.detect_potholes(potholes)
 
-        # 속도 계획 적용
-        planned_speed = self.path_planner.get_planned_speed()
-        if planned_speed is not None:
-            # 긴급 정지 또는 감속 (최우선)
-            self.vehicle.target_speed = planned_speed
-        else:
-            # 적응형 크루즈 컨트롤 (ACC)
-            acc_speed = self._calculate_acc_speed()
-            self.vehicle.target_speed = acc_speed
+            # 경로 업데이트 (서브스텝마다)
+            self.update_path()
 
-        # 제어기 업데이트
-        self.controller.update()
+            # 속도 계획 적용
+            planned_speed = self.path_planner.get_planned_speed()
+            if planned_speed is not None:
+                # 긴급 정지 또는 감속 (최우선)
+                self.vehicle.target_speed = planned_speed
+            else:
+                # 적응형 크루즈 컨트롤 (ACC)
+                acc_speed = self._calculate_acc_speed()
+                self.vehicle.target_speed = acc_speed
 
-        # 차량 업데이트
-        self.vehicle.update(dt)
+            # 제어기 업데이트
+            self.controller.update()
+
+            # 차량 업데이트
+            self.vehicle.update(substep_dt)
 
         # 카메라 업데이트
         self.camera.update()
@@ -422,6 +436,7 @@ class Simulation:
         help_text = [
             "SPACE: Pause",
             "UP/DOWN: Speed",
+            "1/2/3: Lane",
             "D: Debug",
             "ESC: Quit"
         ]
@@ -429,7 +444,7 @@ class Simulation:
         small_font = pygame.font.Font(None, 18)
         for i, text in enumerate(help_text):
             rendered = small_font.render(text, True, LIGHT_GRAY)
-            self.screen.blit(rendered, (10, SCREEN_HEIGHT - 80 + i * 20))
+            self.screen.blit(rendered, (10, SCREEN_HEIGHT - 100 + i * 20))
 
     def run(self):
         """

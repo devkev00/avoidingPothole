@@ -35,8 +35,8 @@ class PurePursuitController:
         Returns:
             float: 룩어헤드 거리
         """
-        # 속도에 비례한 룩어헤드 거리 (더 안정적인 추종을 위해 증가)
-        ld = LOOKAHEAD_GAIN * self.vehicle.speed * 1.2
+        # 속도에 비례한 룩어헤드 거리
+        ld = LOOKAHEAD_GAIN * self.vehicle.speed
         return max(MIN_LOOKAHEAD, min(ld, MAX_LOOKAHEAD))
 
     def find_target_point(self):

@@ -140,7 +140,7 @@ class Road:
             list: [(x, y), ...] 경로 포인트
         """
         path = []
-        step = 50  # 경로 포인트 간격
+        step = 20  # 경로 포인트 간격 (50 -> 20으로 감소)
 
         for x in range(int(start_x), int(start_x + length), step):
             y = self.get_lane_center_at_x(x, lane_id)

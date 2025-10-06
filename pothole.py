@@ -101,23 +101,51 @@ class Pothole:
         from config import TRACK_WIDTH
         wheel_gap = TRACK_WIDTH
 
-        # 1. 포트홀 크기만 확인: 바퀴 간격의 40%보다 작으면 통과 가능
+        # 1. 포트홀 크기 확인: 바퀴 간격의 40%보다 작으면 통과 가능성 있음
         max_safe_radius = wheel_gap * 0.4
         if self.radius > max_safe_radius:
             return False  # 너무 큰 포트홀 - 회피 필요
 
-        # 2. 포트홀이 바퀴 경로와 겹치는지만 확인
-        front_left_y = wheels[1][1]
-        front_right_y = wheels[0][1]
+        # 2. 포트홀이 바퀴 경로와 겹치는지 확인
+        # 바퀴 인덱스: 0=앞우, 1=앞좌, 2=뒤우, 3=뒤좌
+        front_right = wheels[0]
+        front_left = wheels[1]
+        rear_right = wheels[2]
+        rear_left = wheels[3]
 
-        # 각 바퀴와의 거리 확인
-        for wx, wy in wheels:
-            dist = math.sqrt((wx - self.x) ** 2 + (wy - self.y) ** 2)
-            # 바퀴와 포트홀이 실제로 충돌하는지만 확인 (매우 가까운 경우)
-            if dist < self.radius + 5:
-                return False  # 바퀴에 닿음
+        # 차량 좌표계로 변환 (전방 방향을 x축으로)
+        cos_a = math.cos(-vehicle.angle)
+        sin_a = math.sin(-vehicle.angle)
 
-        # 작은 포트홀이고 바퀴에 닿지 않음 - 통과 가능
+        # 포트홀의 차량 좌표계 위치
+        dx = self.x - vehicle.x
+        dy = self.y - vehicle.y
+        local_x = dx * cos_a - dy * sin_a
+        local_y = dx * sin_a + dy * cos_a
+
+        # 좌우 바퀴의 차량 좌표계 y 위치 계산
+        left_wheel_y = TRACK_WIDTH / 2
+        right_wheel_y = -TRACK_WIDTH / 2
+
+        # 안전 마진 포함한 바퀴 경로 폭
+        safety_margin = 8  # 픽셀
+        left_path_boundary = left_wheel_y + safety_margin
+        right_path_boundary = right_wheel_y - safety_margin
+
+        # 포트홀이 바퀴 경로 범위 내에 있는지 확인
+        pothole_left = local_y + self.radius
+        pothole_right = local_y - self.radius
+
+        # 포트홀이 바퀴 경로와 겹치면 회피 필요
+        if pothole_right < left_path_boundary and pothole_left > right_path_boundary:
+            # 포트홀이 좌우 바퀴 경로에 걸쳐 있음
+            # 정확히 중앙에 있고 작은 경우에만 통과 가능
+            if abs(local_y) < wheel_gap * 0.2:  # 중앙 20% 범위
+                return True
+            else:
+                return False  # 중앙이 아니면 회피 필요
+
+        # 바퀴 경로 밖에 있음 - 통과 가능
         return True
 
     def draw(self, screen, camera, is_detected=False, vehicle=None):

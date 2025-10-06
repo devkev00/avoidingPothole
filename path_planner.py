@@ -48,39 +48,38 @@ class PathPlanner:
         if self.is_emergency_stopped:
             return self._handle_emergency_stop_state()
 
-        # 가장 가까운 포트홀 확인
-        nearest = self.sensor.get_nearest_pothole()
+        # 가장 가까운 포트홀 가져오기
+        detected = self.sensor.get_nearest_pothole()
 
-        if nearest is None or nearest['distance'] > self.safe_distance:
+        if not detected:
             # 포트홀 없음 - 정상 주행
-            self.planned_speed = None  # 순항 속도 사용
-            return self._plan_normal_path()
-
-        pothole = nearest['pothole']
-        distance = nearest['distance']
-
-        # 포트홀이 현재 차선 밖에 있는지 확인
-        if self._is_pothole_outside_lane(pothole):
-            # 포트홀이 다른 차선에만 있음 - 무시하고 정상 주행
             self.planned_speed = None
             return self._plan_normal_path()
 
-        # 포트홀 위치 분석
+        pothole = detected['pothole']
+        distance = detected['distance']
+
+        # 포트홀이 현재 차선 밖에 있으면 무시
+        if self._is_pothole_outside_lane(pothole):
+            self.planned_speed = None
+            return self._plan_normal_path()
+
+        # 포트홀 상황 분석
         avoidance_type = self._analyze_pothole_situation(pothole, distance)
 
         # 회피 전략에 따른 경로 및 속도 계획
         if avoidance_type == "PASS_THROUGH":
-            # 상황 1-1-1: 바퀴 사이 통과 가능
+            # 포트홀 통과 가능
             self.planned_speed = None
             return self._plan_normal_path()
 
         elif avoidance_type == "IN_LANE_LEFT" or avoidance_type == "IN_LANE_RIGHT":
-            # 상황 1: 차선 내부 회피
-            self.planned_speed = None  # 속도 유지
+            # 차선 내부 회피
+            self.planned_speed = None
             return self._plan_in_lane_avoidance(pothole, avoidance_type, distance)
 
         elif avoidance_type == "LANE_CHANGE":
-            # 상황 2/3: 차선 변경 필요
+            # 차선 변경 필요
             return self._plan_lane_change_with_traffic(pothole, distance)
 
         else:
@@ -254,6 +253,85 @@ class PathPlanner:
 
         return path if path else self._plan_normal_path()
 
+    def _analyze_multiple_potholes(self, lane_potholes):
+        """
+        전방의 여러 포트홀을 종합적으로 분석하여 회피 전략 결정
+
+        Args:
+            lane_potholes: [{'pothole': Pothole, 'distance': float}, ...]
+
+        Returns:
+            str: 회피 유형
+        """
+        from config import TRACK_WIDTH
+        wheel_gap = TRACK_WIDTH
+
+        # 1. 모든 포트홀이 통과 가능한지 확인
+        all_passable = all(
+            p['pothole'].is_between_wheels(self.vehicle)
+            for p in lane_potholes
+        )
+
+        if all_passable:
+            return "PASS_THROUGH"
+
+        # 2. 큰 포트홀(바퀴 간격보다 큰) 개수 확인
+        large_potholes = [
+            p for p in lane_potholes
+            if p['pothole'].radius * 2 > wheel_gap
+        ]
+
+        # 3. 현재 차선 정보
+        current_lane = self.road.get_current_lane(self.vehicle.x, self.vehicle.y)
+        if not current_lane:
+            # 차선 정보 없으면 가장 가까운 포트홀만 고려
+            nearest = lane_potholes[0]
+            return self._analyze_pothole_situation(nearest['pothole'], nearest['distance'])
+
+        # 4. 포트홀들의 위치 분포 분석
+        left_count = 0
+        center_count = 0
+        right_count = 0
+
+        for p_data in lane_potholes:
+            pothole = p_data['pothole']
+            lane_center_y = self.road.get_lane_center_at_x(pothole.x, current_lane)
+
+            if lane_center_y:
+                offset = pothole.y - lane_center_y
+
+                if offset < -self.road.lane_width * 0.15:
+                    left_count += 1
+                elif offset > self.road.lane_width * 0.15:
+                    right_count += 1
+                else:
+                    center_count += 1
+
+        # 5. 종합 판단
+        # 큰 포트홀이 2개 이상이거나, 중앙에 포트홀이 많으면 차선 변경
+        if len(large_potholes) >= 2 or center_count >= 2:
+            return "LANE_CHANGE"
+
+        # 큰 포트홀이 1개 있으면 개별 분석
+        if len(large_potholes) == 1:
+            nearest = lane_potholes[0]
+            return self._analyze_pothole_situation(nearest['pothole'], nearest['distance'])
+
+        # 작은 포트홀들만 있는 경우 - 분포에 따라 결정
+        if left_count > 0 and right_count == 0:
+            # 모두 왼쪽 - 오른쪽으로 회피
+            return "IN_LANE_RIGHT"
+        elif right_count > 0 and left_count == 0:
+            # 모두 오른쪽 - 왼쪽으로 회피
+            return "IN_LANE_LEFT"
+        elif center_count > 0:
+            # 중앙에 있음 - 차선 변경
+            return "LANE_CHANGE"
+        else:
+            # 양쪽에 분산 - 가장 가까운 포트홀 기준
+            nearest = lane_potholes[0]
+            return self._analyze_pothole_situation(nearest['pothole'], nearest['distance'])
+
     def _is_pothole_outside_lane(self, pothole):
         """
         포트홀이 현재 차선 밖에 있는지 확인
@@ -317,39 +395,62 @@ class PathPlanner:
         local_x = dx * cos_a - dy * sin_a  # 차량 전방/후방
         local_y = dx * sin_a + dy * cos_a  # 차량 좌/우
 
-        # 포트홀 크기 확인
-        if pothole.radius > 30:
-            # 큰 포트홀 - 차선 변경 고려
-            # 포트홀이 차선 중앙에 가까운지, 왼쪽/오른쪽에 치우쳤는지 확인
+        # 바퀴 간격 가져오기
+        from config import TRACK_WIDTH
+        wheel_gap = TRACK_WIDTH
+
+        # 포트홀 크기가 바퀴 사이 너비보다 큰지 확인
+        if pothole.radius * 2 > wheel_gap:
+            # 큰 포트홀 - 위치별 회피 전략 결정
             current_lane = self.road.get_current_lane(self.vehicle.x, self.vehicle.y)
             if current_lane:
                 lane_center_y = self.road.get_lane_center_at_x(pothole.x, current_lane)
                 if lane_center_y:
                     # 포트홀이 차선 중앙에서 어느 쪽에 있는지
                     offset_from_lane_center = pothole.y - lane_center_y
+                    lane_half_width = self.road.lane_width / 2
 
-                    # 차선의 1/4 이상 치우친 경우 차선 내부 회피 시도
-                    if abs(offset_from_lane_center) > self.road.lane_width * 0.25:
-                        # 포트홀이 차선 왼쪽에 치우침 -> 오른쪽으로 회피
-                        if offset_from_lane_center < 0:
-                            return "IN_LANE_RIGHT"
-                        # 포트홀이 차선 오른쪽에 치우침 -> 왼쪽으로 회피
-                        else:
-                            return "IN_LANE_LEFT"
+                    # 포트홀이 도로 중앙에 위치한 경우 (차선 중앙 20% 이내)
+                    if abs(offset_from_lane_center) < self.road.lane_width * 0.2:
+                        # 무조건 차선 외부 회피 (차선 변경)
+                        return "LANE_CHANGE"
 
-            # 중앙에 있거나 확인 불가 - 차선 변경
+                    # 포트홀이 좌측 또는 우측에 치우친 경우 - 무조건 차선 내부 회피
+                    if offset_from_lane_center < 0:
+                        # 포트홀이 차선 왼쪽에 위치 -> 오른쪽으로 회피
+                        return "IN_LANE_RIGHT"
+                    else:
+                        # 포트홀이 차선 오른쪽에 위치 -> 왼쪽으로 회피
+                        return "IN_LANE_LEFT"
+
+            # 차선 정보 없으면 차선 변경
             return "LANE_CHANGE"
 
         # 작은/중간 포트홀 - 차선 내부 회피
-        # 왼쪽/오른쪽 판단 (local_y > 0: 좌측, local_y < 0: 우측)
+        # 차선 중앙 기준으로 판단 (차량 좌표계가 아닌 절대 좌표 기준)
+        current_lane = self.road.get_current_lane(self.vehicle.x, self.vehicle.y)
+        if current_lane:
+            lane_center_y = self.road.get_lane_center_at_x(pothole.x, current_lane)
+            if lane_center_y:
+                # 포트홀이 차선 중앙에서 어느 쪽에 있는지
+                offset_from_lane_center = pothole.y - lane_center_y
+
+                if offset_from_lane_center < 0:
+                    # 포트홀이 차선 위쪽(왼쪽)에 위치 -> 아래쪽(오른쪽)으로 회피
+                    return "IN_LANE_RIGHT"
+                else:
+                    # 포트홀이 차선 아래쪽(오른쪽)에 위치 -> 위쪽(왼쪽)으로 회피
+                    return "IN_LANE_LEFT"
+
+        # 차선 정보 없으면 차량 좌표계 기준으로 폴백
         if local_y > 0:
-            return "IN_LANE_RIGHT"  # 포트홀이 좌측 -> 우측으로 회피
-        else:
             return "IN_LANE_LEFT"   # 포트홀이 우측 -> 좌측으로 회피
+        else:
+            return "IN_LANE_RIGHT"  # 포트홀이 좌측 -> 우측으로 회피
 
     def _plan_normal_path(self):
         """
-        정상 주행 경로 (차선 중앙 추종)
+        정상 주행 경로 (차선 중앙 추종)py
 
         Returns:
             list: 경로 포인트
@@ -371,8 +472,6 @@ class PathPlanner:
         Returns:
             list: 경로 포인트
         """
-        self.avoidance_state = "IN_LANE_AVOID"
-
         path = []
         current_x = self.vehicle.x
 
@@ -382,38 +481,37 @@ class PathPlanner:
         if not lane_center_path:
             return self._plan_normal_path()
 
-        # 회피 오프셋 계산 (포트홀 크기 + 최소 안전 마진)
-        from config import VEHICLE_WIDTH
+        # 회피 방향 결정
+        from config import TRACK_WIDTH
+        min_margin = 15  # 안전 마진 증가
+        max_offset = self.road.lane_width * 0.35
 
-        # 포트홀 반경 + 차량 절반 폭 + 최소 여유
-        min_margin = 3  # 최소 안전 마진
-        required_clearance = pothole.radius + (VEHICLE_WIDTH / 2) + min_margin
+        offset_direction = 1 if avoidance_type == "IN_LANE_RIGHT" else -1
+        self.avoidance_state = "IN_LANE_AVOID"
 
-        # 차선 폭 제한 (차선을 벗어나지 않도록)
-        max_offset = self.road.lane_width * 0.25
-        offset = min(required_clearance, max_offset)
+        # 필요한 회피 거리 계산 (차량 중심에서 바퀴까지 거리 + 포트홀 반경 + 안전마진)
+        required_clearance = pothole.radius + (TRACK_WIDTH / 2) + min_margin
 
-        if avoidance_type == "IN_LANE_RIGHT":
-            offset = -offset  # 오른쪽으로 (y 감소)
-
-        # 경로 생성
+        # 경로 생성 (max_offset으로 제한)
         for i, (px, py) in enumerate(lane_center_path):
-            # 포트홀 전후로 부드럽게 회피
-            x_dist_to_pothole = pothole.x - px
+            x_dist = pothole.x - px
 
-            if x_dist_to_pothole > 100:
-                # 포트홀 전: 점진적으로 오프셋 증가
-                t = max(0, min(1, (150 - x_dist_to_pothole) / 50))
-                current_offset = offset * t
-            elif x_dist_to_pothole > -100:
+            # 포트홀과의 x 거리에 따라 오프셋 강도 조절 (더 긴 전환 구간)
+            if x_dist > 100:
+                # 포트홀 전: 점진적으로 오프셋 증가 (200px 전부터 시작)
+                t = max(0, (200 - x_dist) / 100)
+            elif x_dist > -100:
                 # 포트홀 근처: 최대 오프셋 유지
-                current_offset = offset
+                t = 1.0
             else:
-                # 포트홀 후: 점진적으로 중앙 복귀
-                t = max(0, min(1, (x_dist_to_pothole + 150) / 50))
-                current_offset = offset * t
+                # 포트홀 후: 점진적으로 감소 (100px 후부터)
+                t = max(0, (x_dist + 200) / 100)
 
-            path.append((px, py + current_offset))
+            t = max(0, min(1, t))
+            # max_offset으로 제한하여 차선을 벗어나지 않도록
+            actual_clearance = min(required_clearance, max_offset)
+            offset = actual_clearance * t * offset_direction
+            path.append((px, py + offset))
 
         return path
 
@@ -445,35 +543,31 @@ class PathPlanner:
         target_lane = self._select_avoidance_lane(current_lane, pothole)
 
         if target_lane is None:
-            # 차선 변경 불가능 - 차선 내부 회피 시도
-            if pothole.y < self.vehicle.y:
-                return self._plan_in_lane_avoidance(pothole, "IN_LANE_RIGHT", distance)
-            else:
-                return self._plan_in_lane_avoidance(pothole, "IN_LANE_LEFT", distance)
+            # 차선 변경 불가능 - 정상 주행
+            return self._plan_normal_path()
 
         # 차선 변경 경로 생성
         path = []
         current_x = self.vehicle.x
 
-        # 3단계 경로: 현재 차선 -> 목표 차선 -> 원래 차선
-        for x in range(int(current_x), int(current_x + 1500), 50):
+        # 3단계 경로: 현재 차선 -> 목표 차선 -> 원래 차선 (더 부드럽게)
+        for x in range(int(current_x), int(current_x + 1500), 20):
             x_dist_to_pothole = pothole.x - x
 
-            if x_dist_to_pothole > 150:
-                # 1단계: 목표 차선으로 이동
-                lane = current_lane
-                t = max(0, min(1, (200 - x_dist_to_pothole) / 50))
+            if x_dist_to_pothole > 80:
+                # 1단계: 목표 차선으로 이동 (150px 전부터 시작)
+                t = max(0, min(1, (150 - x_dist_to_pothole) / 70))
                 y_current = self.road.get_lane_center_at_x(x, current_lane)
                 y_target = self.road.get_lane_center_at_x(x, target_lane)
                 y = y_current + (y_target - y_current) * t
 
-            elif x_dist_to_pothole > -100:
+            elif x_dist_to_pothole > -80:
                 # 2단계: 목표 차선 유지
                 y = self.road.get_lane_center_at_x(x, target_lane)
 
             else:
-                # 3단계: 원래 차선으로 복귀
-                t = max(0, min(1, (x_dist_to_pothole + 200) / 100))
+                # 3단계: 원래 차선으로 복귀 (80px 후부터)
+                t = max(0, min(1, (x_dist_to_pothole + 150) / 70))
                 y_target = self.road.get_lane_center_at_x(x, target_lane)
                 y_current = self.road.get_lane_center_at_x(x, current_lane)
                 y = y_target + (y_current - y_target) * (1 - t)

@@ -39,21 +39,27 @@ class Vehicle:
         Args:
             dt: 시간 간격 (초)
         """
-        # 속도 업데이트 (간단한 PID 제어)
-        speed_diff = self.target_speed - self.speed
-        if speed_diff > 0:
-            self.speed += min(ACCELERATION * dt, speed_diff)
-        else:
-            self.speed += max(-DECELERATION * dt, speed_diff)
-
         # 조향각 업데이트 (부드러운 전환)
         steering_diff = self.target_steering - self.steering_angle
-        max_change = 2.0 * dt  # 최대 조향 변화율
+        max_change = 1.2 * dt  # 최대 조향 변화율 (2.0 -> 1.2로 감소)
         self.steering_angle += max(min(steering_diff, max_change), -max_change)
 
         # 조향각 제한
         self.steering_angle = max(min(self.steering_angle, MAX_STEERING_ANGLE),
                                   -MAX_STEERING_ANGLE)
+
+        # 조향각에 따른 속도 제한 (급커브에서 자동 감속)
+        steering_ratio = abs(self.steering_angle) / MAX_STEERING_ANGLE
+        # 조향각이 0이면 제한 없음, MAX_STEERING_ANGLE이면 30% 감속
+        speed_limit_factor = 1.0 - (steering_ratio * 0.3)
+        adjusted_target_speed = self.target_speed * speed_limit_factor
+
+        # 속도 업데이트 (간단한 PID 제어)
+        speed_diff = adjusted_target_speed - self.speed
+        if speed_diff > 0:
+            self.speed += min(ACCELERATION * dt, speed_diff)
+        else:
+            self.speed += max(-DECELERATION * dt, speed_diff)
 
         # Ackermann 조향 모델에 따른 위치 업데이트
         if abs(self.steering_angle) > 0.001:
@@ -145,16 +151,61 @@ class Vehicle:
         pygame.draw.polygon(screen, BLUE, screen_corners)
         pygame.draw.polygon(screen, CYAN, screen_corners, 2)
 
-        # 디버그 모드: 바퀴 위치 표시
-        if DEBUG_MODE:
-            wheels = self.get_wheel_positions()
-            for wx, wy in wheels:
-                screen_wheel = camera.world_to_screen((wx, wy))
-                pygame.draw.circle(screen, RED, screen_wheel, 5)
+        # 바퀴 그리기 (직사각형)
+        self._draw_wheels(screen, camera)
 
-            # 차량 방향 표시 (화살표)
+        # 디버그 모드: 차량 방향 표시 (화살표)
+        if DEBUG_MODE:
             arrow_end = camera.world_to_screen((
                 self.x + 50 * cos_a,
                 self.y + 50 * sin_a
             ))
             pygame.draw.line(screen, YELLOW, screen_pos, arrow_end, 3)
+
+    def _draw_wheels(self, screen, camera):
+        """
+        바퀴를 직사각형으로 그리기
+
+        Args:
+            screen: Pygame surface
+            camera: Camera 객체
+        """
+        # 바퀴 크기
+        wheel_length = 12  # 바퀴 길이 (진행 방향)
+        wheel_width = 6    # 바퀴 폭 (측면)
+
+        wheels = self.get_wheel_positions()
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+
+        for i, (wx, wy) in enumerate(wheels):
+            # 바퀴 조향각 계산 (앞바퀴만 조향)
+            if i in [0, 1]:  # 앞바퀴
+                wheel_angle = self.angle + self.steering_angle
+            else:  # 뒷바퀴
+                wheel_angle = self.angle
+
+            # 바퀴의 네 모서리 계산 (로컬 좌표)
+            half_length = wheel_length / 2
+            half_width = wheel_width / 2
+
+            wheel_cos = math.cos(wheel_angle)
+            wheel_sin = math.sin(wheel_angle)
+
+            wheel_corners_local = [
+                (half_length, half_width),
+                (half_length, -half_width),
+                (-half_length, -half_width),
+                (-half_length, half_width),
+            ]
+
+            # 회전 및 화면 좌표 변환
+            wheel_screen_corners = []
+            for cx, cy in wheel_corners_local:
+                world_x = wx + cx * wheel_cos - cy * wheel_sin
+                world_y = wy + cx * wheel_sin + cy * wheel_cos
+                wheel_screen_corners.append(camera.world_to_screen((world_x, world_y)))
+
+            # 바퀴 그리기
+            pygame.draw.polygon(screen, BLACK, wheel_screen_corners)
+            pygame.draw.polygon(screen, DARK_GRAY, wheel_screen_corners, 1)

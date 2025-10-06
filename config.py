@@ -3,7 +3,7 @@
 """
 
 # 화면 설정
-SCREEN_WIDTH = 1200
+SCREEN_WIDTH = 1000
 SCREEN_HEIGHT = 800
 FPS = 60
 
@@ -36,12 +36,12 @@ MAX_SPEED = 200  # 최대 속도 (픽셀/초)
 MIN_SPEED = 50   # 최소 속도
 ACCELERATION = 100  # 가속도
 DECELERATION = 150  # 감속도
-MAX_STEERING_ANGLE = 0.5  # 최대 조향각 (라디안, 약 28도)
+MAX_STEERING_ANGLE = 0.35  # 최대 조향각 (라디안, 약 20도) - 0.5에서 감소
 
 # Pure Pursuit 제어기 설정
-LOOKAHEAD_GAIN = 0.3  # 속도 대비 룩어헤드 거리 비율
-MIN_LOOKAHEAD = 50    # 최소 룩어헤드 거리
-MAX_LOOKAHEAD = 150   # 최대 룩어헤드 거리
+LOOKAHEAD_GAIN = 0.4   # 속도 대비 룩어헤드 거리 비율 (0.25 -> 0.4)
+MIN_LOOKAHEAD = 60     # 최소 룩어헤드 거리 (40 -> 60)
+MAX_LOOKAHEAD = 180    # 최대 룩어헤드 거리 (120 -> 180)
 
 # 센서 설정
 SENSOR_RANGE = 300  # 포트홀 감지 범위 (픽셀)
