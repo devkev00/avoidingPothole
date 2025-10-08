@@ -17,8 +17,8 @@ class PotholeGenerator:
         self.road = road
         self.potholes = []
         self.last_generated_x = 0
-        self.generation_interval = 200  # 포트홀 생성 간격 (픽셀) - 250에서 감소
-        self.spawn_probability = 0.5  # 각 구간에 포트홀이 생성될 확률 - 0.4에서 증가
+        self.generation_interval = 220  # 포트홀 생성 간격 (픽셀) - 250에서 감소
+        self.spawn_probability = 0.45  # 각 구간에 포트홀이 생성될 확률 - 0.4에서 증가
 
     def generate_potholes(self, vehicle_x):
         """

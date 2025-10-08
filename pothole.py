@@ -7,6 +7,8 @@ from config import *
 
 
 class Pothole:
+    _id_counter = 0  # 클래스 변수로 고유 ID 생성
+
     def __init__(self, x, y, radius):
         """
         포트홀 초기화
@@ -18,6 +20,10 @@ class Pothole:
         self.x = x
         self.y = y
         self.radius = radius
+
+        # 고유 ID 부여
+        Pothole._id_counter += 1
+        self.id = Pothole._id_counter
 
     def check_collision(self, wheel_positions):
         """
@@ -42,8 +48,8 @@ class Pothole:
             if distance < min_distance:
                 min_distance = distance
 
-            # 바퀴가 포트홀에 들어갔는지 확인 (약간의 마진 포함)
-            if distance < self.radius + 5:  # 5픽셀 마진
+            # 바퀴가 포트홀에 들어갔는지 확인 (경계선 접촉은 허용)
+            if distance < self.radius - 3:  # 경계선 닿는 것은 OK, 3px 안으로 들어가야 충돌
                 collision_wheel = i
 
         return {
@@ -101,8 +107,8 @@ class Pothole:
         from config import TRACK_WIDTH
         wheel_gap = TRACK_WIDTH
 
-        # 1. 포트홀 크기 확인: 바퀴 간격의 40%보다 작으면 통과 가능성 있음
-        max_safe_radius = wheel_gap * 0.4
+        # 1. 포트홀 크기 확인: 바퀴 간격의 80%보다 작으면 통과 가능성 있음
+        max_safe_radius = wheel_gap * 0.8  # 바퀴 간격의 80%
         if self.radius > max_safe_radius:
             return False  # 너무 큰 포트홀 - 회피 필요
 
@@ -127,8 +133,8 @@ class Pothole:
         left_wheel_y = TRACK_WIDTH / 2
         right_wheel_y = -TRACK_WIDTH / 2
 
-        # 안전 마진 포함한 바퀴 경로 폭
-        safety_margin = 8  # 픽셀
+        # 안전 마진 포함한 바퀴 경로 폭 (경계선 접촉 허용)
+        safety_margin = -3  # 음수로 설정하여 경계선 접촉 허용
         left_path_boundary = left_wheel_y + safety_margin
         right_path_boundary = right_wheel_y - safety_margin
 
@@ -139,8 +145,8 @@ class Pothole:
         # 포트홀이 바퀴 경로와 겹치면 회피 필요
         if pothole_right < left_path_boundary and pothole_left > right_path_boundary:
             # 포트홀이 좌우 바퀴 경로에 걸쳐 있음
-            # 정확히 중앙에 있고 작은 경우에만 통과 가능
-            if abs(local_y) < wheel_gap * 0.2:  # 중앙 20% 범위
+            # 중앙에 있으면 통과 가능
+            if abs(local_y) < wheel_gap * 0.15:  # 중앙 50% 범위 (더 관대하게)
                 return True
             else:
                 return False  # 중앙이 아니면 회피 필요

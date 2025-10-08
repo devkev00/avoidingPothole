@@ -41,21 +41,15 @@ class Vehicle:
         """
         # 조향각 업데이트 (부드러운 전환)
         steering_diff = self.target_steering - self.steering_angle
-        max_change = 1.2 * dt  # 최대 조향 변화율 (2.0 -> 1.2로 감소)
+        max_change = 0.8 * dt  # 최대 조향 변화율 (1.2 -> 0.8로 감소)
         self.steering_angle += max(min(steering_diff, max_change), -max_change)
 
         # 조향각 제한
         self.steering_angle = max(min(self.steering_angle, MAX_STEERING_ANGLE),
                                   -MAX_STEERING_ANGLE)
 
-        # 조향각에 따른 속도 제한 (급커브에서 자동 감속)
-        steering_ratio = abs(self.steering_angle) / MAX_STEERING_ANGLE
-        # 조향각이 0이면 제한 없음, MAX_STEERING_ANGLE이면 30% 감속
-        speed_limit_factor = 1.0 - (steering_ratio * 0.3)
-        adjusted_target_speed = self.target_speed * speed_limit_factor
-
         # 속도 업데이트 (간단한 PID 제어)
-        speed_diff = adjusted_target_speed - self.speed
+        speed_diff = self.target_speed - self.speed
         if speed_diff > 0:
             self.speed += min(ACCELERATION * dt, speed_diff)
         else:
@@ -113,6 +107,34 @@ class Vehicle:
         offset_x = (self.wheel_base / 2) * math.cos(self.angle)
         offset_y = (self.wheel_base / 2) * math.sin(self.angle)
         return (self.x + offset_x, self.y + offset_y)
+
+    def get_corners(self):
+        """
+        차량의 네 모서리 좌표 반환 (충돌 감지용)
+
+        Returns:
+            list: [(x, y), ...] 네 모서리 좌표
+        """
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        corners_local = [
+            (half_length, half_width),
+            (half_length, -half_width),
+            (-half_length, -half_width),
+            (-half_length, half_width),
+        ]
+
+        corners_world = []
+        for cx, cy in corners_local:
+            world_x = self.x + cx * cos_a - cy * sin_a
+            world_y = self.y + cx * sin_a + cy * cos_a
+            corners_world.append((world_x, world_y))
+
+        return corners_world
 
     def draw(self, screen, camera):
         """

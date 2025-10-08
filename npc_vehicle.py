@@ -32,10 +32,10 @@ class NPCVehicle:
 
         self.speed = self.target_speed  # 현재 속도
 
-        # 차량 크기
-        self.length = VEHICLE_LENGTH * 0.9  # 플레이어보다 약간 작게
-        self.width = VEHICLE_WIDTH * 0.9
-        self.wheel_base = WHEEL_BASE * 0.9
+        # 차량 크기 (플레이어와 동일)
+        self.length = VEHICLE_LENGTH
+        self.width = VEHICLE_WIDTH
+        self.wheel_base = WHEEL_BASE
 
         # 경로 추종
         self.path_update_distance = 100  # 경로 업데이트 간격
@@ -136,9 +136,37 @@ class NPCVehicle:
             'height': self.width
         }
 
+    def get_corners(self):
+        """
+        차량의 네 모서리 좌표 반환
+
+        Returns:
+            list: [(x, y), ...] 네 모서리 좌표
+        """
+        cos_a = math.cos(self.angle)
+        sin_a = math.sin(self.angle)
+
+        half_length = self.length / 2
+        half_width = self.width / 2
+
+        corners_local = [
+            (half_length, half_width),
+            (half_length, -half_width),
+            (-half_length, -half_width),
+            (-half_length, half_width),
+        ]
+
+        corners_world = []
+        for cx, cy in corners_local:
+            world_x = self.x + cx * cos_a - cy * sin_a
+            world_y = self.y + cx * sin_a + cy * cos_a
+            corners_world.append((world_x, world_y))
+
+        return corners_world
+
     def check_collision_with_vehicle(self, other_vehicle):
         """
-        다른 차량과의 충돌 체크
+        다른 차량과의 충돌 체크 (OBB - Oriented Bounding Box)
 
         Args:
             other_vehicle: Vehicle 또는 NPCVehicle 객체
@@ -146,15 +174,68 @@ class NPCVehicle:
         Returns:
             bool: 충돌 여부
         """
-        # 간단한 원형 충돌 감지
+        # SAT (Separating Axis Theorem) 사용
+        # 먼저 빠른 거리 체크로 확실히 멀리 있으면 스킵
         distance = math.sqrt(
             (self.x - other_vehicle.x) ** 2 +
             (self.y - other_vehicle.y) ** 2
         )
 
-        collision_distance = (self.length + other_vehicle.length) / 2 * 0.8
+        max_distance = (self.length + other_vehicle.length) / 2 + (self.width + other_vehicle.width) / 2
+        if distance > max_distance:
+            return False
 
-        return distance < collision_distance
+        # 두 차량의 모서리 좌표 가져오기
+        corners1 = self.get_corners()
+        corners2 = other_vehicle.get_corners()
+
+        # SAT를 사용한 충돌 검사
+        return self._sat_collision_check(corners1, corners2)
+
+    def _sat_collision_check(self, corners1, corners2):
+        """
+        SAT (Separating Axis Theorem)를 사용한 충돌 검사
+
+        Args:
+            corners1: 첫 번째 사각형의 모서리
+            corners2: 두 번째 사각형의 모서리
+
+        Returns:
+            bool: 충돌 여부
+        """
+        def get_axes(corners):
+            """사각형의 변들에 수직인 축 계산"""
+            axes = []
+            for i in range(len(corners)):
+                p1 = corners[i]
+                p2 = corners[(i + 1) % len(corners)]
+                edge = (p2[0] - p1[0], p2[1] - p1[1])
+                # 수직 벡터 (법선)
+                normal = (-edge[1], edge[0])
+                # 정규화
+                length = math.sqrt(normal[0]**2 + normal[1]**2)
+                if length > 0:
+                    axes.append((normal[0] / length, normal[1] / length))
+            return axes
+
+        def project(corners, axis):
+            """사각형을 축에 투영"""
+            dots = [corner[0] * axis[0] + corner[1] * axis[1] for corner in corners]
+            return min(dots), max(dots)
+
+        # 두 사각형의 모든 축에 대해 검사
+        axes = get_axes(corners1) + get_axes(corners2)
+
+        for axis in axes:
+            proj1 = project(corners1, axis)
+            proj2 = project(corners2, axis)
+
+            # 투영이 겹치지 않으면 충돌하지 않음
+            if proj1[1] < proj2[0] or proj2[1] < proj1[0]:
+                return False
+
+        # 모든 축에서 겹치면 충돌
+        return True
 
     def is_in_danger_zone(self, target_x, target_y, radius):
         """

@@ -68,9 +68,81 @@ class Simulation:
         # 초기 경로 설정
         self.update_path()
 
+        # 경로 업데이트 제어
+        self.path_update_counter = 0
+        self.last_avoidance_state = "NORMAL"
+
         # 시뮬레이션 상태
         self.running = True
         self.paused = False
+
+        # 포트홀 회피 성공률 지표
+        self.pothole_tracking = {}  # {pothole_id: {...상태...}}
+        self.avoidance_scores = []  # [3, 1, 0, 3, ...] 각 포트홀별 점수
+
+    def _track_pothole_avoidance(self):
+        """
+        포트홀 회피 추적 및 점수 계산
+        """
+        potholes = self.pothole_generator.get_potholes()
+        detected = self.sensor.detected_potholes
+
+        # 감지된 포트홀 추적 시작
+        for p_data in detected:
+            pothole = p_data['pothole']
+            p_id = pothole.id
+
+            if p_id not in self.pothole_tracking:
+                # 새로운 포트홀 추적 시작
+                self.pothole_tracking[p_id] = {
+                    'pothole': pothole,
+                    'detected': True,
+                    'pothole_hit': False,
+                    'npc_collision': False,
+                    'evaluated': False,
+                    'detection_x': self.vehicle.x
+                }
+
+        # 포트홀 충돌 체크
+        wheels = self.vehicle.get_wheel_positions()
+        for pothole in potholes:
+            p_id = pothole.id
+            if p_id in self.pothole_tracking and not self.pothole_tracking[p_id]['evaluated']:
+                collision_info = pothole.check_collision(wheels)
+                if collision_info['collision']:
+                    self.pothole_tracking[p_id]['pothole_hit'] = True
+
+        # NPC 충돌 체크
+        for npc in self.traffic_manager.get_all_vehicles():
+            if npc.check_collision_with_vehicle(self.vehicle):
+                # 현재 추적 중인 모든 포트홀에 NPC 충돌 기록
+                for p_id in self.pothole_tracking:
+                    if not self.pothole_tracking[p_id]['evaluated']:
+                        self.pothole_tracking[p_id]['npc_collision'] = True
+
+        # 포트홀을 지나갔는지 확인하고 점수 계산
+        for p_id in list(self.pothole_tracking.keys()):
+            tracking = self.pothole_tracking[p_id]
+            if tracking['evaluated']:
+                continue
+
+            pothole = tracking['pothole']
+            # 차량이 포트홀을 충분히 지나갔으면 평가 (150px 뒤)
+            if self.vehicle.x > pothole.x + 150:
+                # 점수 계산
+                if tracking['pothole_hit']:
+                    # 포트홀 밟음 = 0점
+                    score = 0
+                elif tracking['npc_collision']:
+                    # 포트홀 회피했지만 NPC 충돌 = 1점
+                    score = 1
+                else:
+                    # 완전 성공 = 3점
+                    score = 3
+
+                self.avoidance_scores.append(score)
+                tracking['evaluated'] = True
+                tracking['score'] = score
 
     def update_path(self):
         """
@@ -84,7 +156,7 @@ class Simulation:
 
     def _calculate_acc_speed(self):
         """
-        적응형 크루즈 컨트롤(ACC) 속도 계산
+        적응형 크루즈 컨트롤(ACC) 속도 계산 - 더 보수적으로 개선
 
         Returns:
             float: 목표 속도
@@ -109,28 +181,34 @@ class Simulation:
         front_vehicle = front_vehicle_info['vehicle']
         relative_speed = front_vehicle_info['relative_speed']
 
-        # 안전 거리 계산 (차량 하나 들어갈 정도 = 차량 길이 + 여유)
-        # 시간 기반 안전 거리: 2초 법칙
-        time_gap = 2.0  # 초
-        safe_distance = self.vehicle.speed * time_gap + VEHICLE_LENGTH * 1.5
+        # 안전 거리 계산 (더 보수적으로)
+        # 시간 기반 안전 거리: 2.5초 법칙 (2.0 -> 2.5)
+        time_gap = 2.5  # 초
+        safe_distance = self.vehicle.speed * time_gap + VEHICLE_LENGTH * 2.0  # 1.5 -> 2.0
 
-        # 최소 안전 거리
-        min_safe_distance = VEHICLE_LENGTH * 1.2
+        # 최소 안전 거리 (더 길게) - 1.5 -> 2.0으로 증가
+        min_safe_distance = VEHICLE_LENGTH * 2.0
+
+        # 긴급 제동 거리 - 1.0 -> 1.8로 증가
+        emergency_distance = VEHICLE_LENGTH * 1.8
 
         # 안전 거리와 실제 거리 비교
-        if distance < min_safe_distance:
-            # 너무 가까움 - 급감속
-            target_speed = front_vehicle.speed * 0.7
+        if distance < emergency_distance:
+            # 긴급 상황 - 급제동
+            target_speed = 0
+        elif distance < min_safe_distance:
+            # 너무 가까움 - 강한 감속
+            target_speed = front_vehicle.speed * 0.5  # 0.7 -> 0.5
         elif distance < safe_distance:
             # 안전 거리 이하 - 감속
-            # 거리에 비례한 속도 조정
+            # 거리에 비례한 속도 조정 (더 보수적)
             speed_factor = (distance - min_safe_distance) / (safe_distance - min_safe_distance)
-            target_speed = front_vehicle.speed * (0.7 + 0.3 * speed_factor)
+            target_speed = front_vehicle.speed * (0.6 + 0.3 * speed_factor)  # 0.7 -> 0.6
         else:
             # 안전 거리 확보 - 전방 차량 속도 매칭 또는 순항
-            if relative_speed > 10:
+            if relative_speed > 15:  # 10 -> 15로 더 보수적
                 # 내가 훨씬 빠름 - 서서히 감속
-                target_speed = min(self.cruise_speed, front_vehicle.speed + 20)
+                target_speed = min(self.cruise_speed, front_vehicle.speed + 15)  # 20 -> 15
             else:
                 # 속도 비슷 - 순항 속도
                 target_speed = self.cruise_speed
@@ -196,19 +274,33 @@ class Simulation:
         # NPC 차량 업데이트
         self.traffic_manager.update(dt)
 
-        # 서브스텝을 사용한 더 빠른 경로 업데이트
-        # 한 프레임을 2개의 서브스텝으로 나눠서 경로를 더 자주 업데이트
-        num_substeps = 4
+        # 포트홀 감지
+        potholes = self.pothole_generator.get_potholes()
+        self.sensor.detect_potholes(potholes)
+
+        # 경로 업데이트 (회피 상태에 따라 빈도 조절)
+        current_state = self.path_planner.get_avoidance_state()
+        self.path_update_counter += 1
+
+        # 상태 변경 시 즉시 업데이트
+        if current_state != self.last_avoidance_state:
+            self.update_path()
+            self.last_avoidance_state = current_state
+            self.path_update_counter = 0
+        # NORMAL 상태: 매 프레임 업데이트
+        elif current_state == "NORMAL":
+            self.update_path()
+            self.path_update_counter = 0
+        # 회피 상태(IN_LANE_AVOID, LANE_CHANGE): 5프레임마다 업데이트
+        elif self.path_update_counter >= 5:
+            self.update_path()
+            self.path_update_counter = 0
+
+        # 서브스텝을 사용한 부드러운 제어
+        num_substeps = 2
         substep_dt = dt / num_substeps
 
         for _ in range(num_substeps):
-            # 포트홀 감지
-            potholes = self.pothole_generator.get_potholes()
-            self.sensor.detect_potholes(potholes)
-
-            # 경로 업데이트 (서브스텝마다)
-            self.update_path()
-
             # 속도 계획 적용
             planned_speed = self.path_planner.get_planned_speed()
             if planned_speed is not None:
@@ -228,17 +320,8 @@ class Simulation:
         # 카메라 업데이트
         self.camera.update()
 
-        # 포트홀 충돌 검사
-        wheels = self.vehicle.get_wheel_positions()
-        for pothole in potholes:
-            collision_info = pothole.check_collision(wheels)
-            if collision_info['collision']:
-                print(f"포트홀 충돌! 바퀴 {collision_info['wheel_index']}")
-
-        # NPC 차량 충돌 검사
-        for npc in self.traffic_manager.get_all_vehicles():
-            if npc.check_collision_with_vehicle(self.vehicle):
-                print(f"차량 충돌! NPC 차량과 충돌")
+        # 포트홀 회피 추적 및 점수 계산
+        self._track_pothole_avoidance()
 
     def draw(self):
         """
@@ -417,6 +500,39 @@ class Simulation:
             True, WHITE
         )
         self.screen.blit(npc_text, (SCREEN_WIDTH - 200, 200))
+
+        # 포트홀 회피 성공률 지표
+        if len(self.avoidance_scores) > 0:
+            total_score = sum(self.avoidance_scores)
+            max_score = len(self.avoidance_scores) * 3
+            success_rate = (total_score / max_score) * 100 if max_score > 0 else 0
+
+            # 점수별 개수
+            perfect = self.avoidance_scores.count(3)
+            partial = self.avoidance_scores.count(1)
+            failed = self.avoidance_scores.count(0)
+
+            # 성공률 표시
+            rate_color = GREEN if success_rate >= 80 else (YELLOW if success_rate >= 50 else RED)
+            rate_text = self.font.render(
+                f"Success Rate: {success_rate:.1f}%",
+                True, rate_color
+            )
+            self.screen.blit(rate_text, (SCREEN_WIDTH - 200, 290))
+
+            # 상세 점수 표시
+            detail_text = self.font.render(
+                f"Perfect: {perfect} | Partial: {partial} | Fail: {failed}",
+                True, WHITE
+            )
+            self.screen.blit(detail_text, (SCREEN_WIDTH - 200, 320))
+
+            # 총점 표시
+            score_text = self.font.render(
+                f"Total: {total_score}/{max_score}",
+                True, CYAN
+            )
+            self.screen.blit(score_text, (SCREEN_WIDTH - 200, 350))
 
         # 긴급 정지 경고
         if avoidance_state == "EMERGENCY_STOP":
