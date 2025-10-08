@@ -26,7 +26,7 @@ class NPCVehicle:
 
         # 속도 설정 (랜덤 또는 지정)
         if speed is None:
-            self.target_speed = random.uniform(60, 140)  # 60~140 px/s
+            self.target_speed = random.uniform(80, 110)  # 80~110 px/s
         else:
             self.target_speed = speed
 

@@ -101,58 +101,39 @@ class Pothole:
         Returns:
             bool: 바퀴 사이 안전하게 있으면 True (회피 불필요)
         """
-        wheels = vehicle.get_wheel_positions()
-
-        # 바퀴 간격 계산 (좌우 바퀴 사이 거리)
-        from config import TRACK_WIDTH
+        # 1. 크기 체크: 직경이 바퀴 간격보다 크면 통과 불가
         wheel_gap = TRACK_WIDTH
+        if self.radius * 2 >= wheel_gap * 0.9:  # 직경 vs 바퀴간격의 90%
+            return False
 
-        # 1. 포트홀 크기 확인: 바퀴 간격의 80%보다 작으면 통과 가능성 있음
-        max_safe_radius = wheel_gap * 0.8  # 바퀴 간격의 80%
-        if self.radius > max_safe_radius:
-            return False  # 너무 큰 포트홀 - 회피 필요
-
-        # 2. 포트홀이 바퀴 경로와 겹치는지 확인
-        # 바퀴 인덱스: 0=앞우, 1=앞좌, 2=뒤우, 3=뒤좌
-        front_right = wheels[0]
-        front_left = wheels[1]
-        rear_right = wheels[2]
-        rear_left = wheels[3]
-
-        # 차량 좌표계로 변환 (전방 방향을 x축으로)
+        # 2. 차량 좌표계로 변환
         cos_a = math.cos(-vehicle.angle)
         sin_a = math.sin(-vehicle.angle)
-
-        # 포트홀의 차량 좌표계 위치
         dx = self.x - vehicle.x
         dy = self.y - vehicle.y
-        local_x = dx * cos_a - dy * sin_a
-        local_y = dx * sin_a + dy * cos_a
+        local_x = dx * cos_a - dy * sin_a  # 전방(+) / 후방(-)
+        local_y = dx * sin_a + dy * cos_a  # 좌측(+) / 우측(-)
 
-        # 좌우 바퀴의 차량 좌표계 y 위치 계산
-        left_wheel_y = TRACK_WIDTH / 2
-        right_wheel_y = -TRACK_WIDTH / 2
+        # 3. 전방 범위 체크 (너무 멀거나 이미 지나간 경우 제외)
+        if local_x < -WHEEL_BASE/2 or local_x > SENSOR_RANGE:
+            return False
 
-        # 안전 마진 포함한 바퀴 경로 폭 (경계선 접촉 허용)
-        safety_margin = -3  # 음수로 설정하여 경계선 접촉 허용
-        left_path_boundary = left_wheel_y + safety_margin
-        right_path_boundary = right_wheel_y - safety_margin
+        # 4. 각 바퀴와의 최소 거리 확인
+        wheels = vehicle.get_wheel_positions()
+        min_wheel_distance = float('inf')
 
-        # 포트홀이 바퀴 경로 범위 내에 있는지 확인
-        pothole_left = local_y + self.radius
-        pothole_right = local_y - self.radius
+        for wx, wy in wheels:
+            dist = math.sqrt((self.x - wx)**2 + (self.y - wy)**2)
+            min_wheel_distance = min(min_wheel_distance, dist)
 
-        # 포트홀이 바퀴 경로와 겹치면 회피 필요
-        if pothole_right < left_path_boundary and pothole_left > right_path_boundary:
-            # 포트홀이 좌우 바퀴 경로에 걸쳐 있음
-            # 중앙에 있으면 통과 가능
-            if abs(local_y) < wheel_gap * 0.3:  # 중앙 30% 범위 (더 관대하게)
-                return True
-            else:
-                return False  # 중앙이 아니면 회피 필요
+        # 안전 마진: 포트홀 반지름 + 여유 5px
+        safe_clearance = self.radius + 5
 
-        # 바퀴 경로 밖에 있음 - 통과 가능
-        return True
+        # 5. 모든 바퀴가 안전 거리 이상 떨어져 있고, 중앙에 위치
+        is_clear_from_wheels = min_wheel_distance > safe_clearance
+        is_centered = abs(local_y) < wheel_gap * 0.25  # 중앙 ±25% 범위
+
+        return is_clear_from_wheels and is_centered
 
     def draw(self, screen, camera, is_detected=False, vehicle=None):
         """

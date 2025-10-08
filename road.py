@@ -178,6 +178,45 @@ class Road:
         """
         return self.get_current_lane(x, y) is not None
 
+    def get_road_boundaries(self, x):
+        """
+        특정 x 좌표에서 도로의 상하 경계 y 좌표 반환
+
+        Args:
+            x: x 좌표
+
+        Returns:
+            tuple: (top_boundary, bottom_boundary) y 좌표
+        """
+        road_center_y = self.get_road_point_at_x(x)
+        half_width = self.total_width / 2
+
+        top_boundary = road_center_y - half_width
+        bottom_boundary = road_center_y + half_width
+
+        return (top_boundary, bottom_boundary)
+
+    def clamp_to_road(self, x, y, margin=0):
+        """
+        y 좌표를 도로 경계 내로 제한
+
+        Args:
+            x: x 좌표
+            y: y 좌표
+            margin: 경계로부터의 안전 마진 (픽셀)
+
+        Returns:
+            float: 제한된 y 좌표
+        """
+        top_boundary, bottom_boundary = self.get_road_boundaries(x)
+
+        # 안전 마진 적용
+        top_boundary += margin
+        bottom_boundary -= margin
+
+        # y를 경계 내로 제한
+        return max(top_boundary, min(bottom_boundary, y))
+
     def can_change_lane(self, current_lane, direction):
         """
         차선 변경 가능 여부 확인

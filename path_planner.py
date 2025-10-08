@@ -48,9 +48,9 @@ def cubic_bezier(t, p0, p1, p2, p3):
     return (x, y)
 
 
-def generate_bezier_path(start, end, control1, control2, num_points=50):
+def generate_bezier_path(start, end, control1, control2, num_points=50, road=None):
     """
-    베지어 곡선 경로 생성
+    베지어 곡선 경로 생성 (도로 경계 내로 제한)
 
     Args:
         start: 시작점 (x, y)
@@ -58,14 +58,34 @@ def generate_bezier_path(start, end, control1, control2, num_points=50):
         control1: 첫 번째 제어점 (x, y)
         control2: 두 번째 제어점 (x, y)
         num_points: 생성할 점의 개수
+        road: Road 객체 (경계 체크용, None이면 체크 안 함)
 
     Returns:
         list: [(x, y), ...] 경로 포인트
     """
+    from config import VEHICLE_WIDTH
+
+    # 차량 반폭 + 안전 마진
+    safety_margin = VEHICLE_WIDTH / 2 + 5
+
+    # 제어점을 먼저 도로 경계 내로 제한 (베지어 곡선 자체를 도로 내로)
+    if road is not None:
+        start = (start[0], road.clamp_to_road(start[0], start[1], margin=safety_margin))
+        end = (end[0], road.clamp_to_road(end[0], end[1], margin=safety_margin))
+        control1 = (control1[0], road.clamp_to_road(control1[0], control1[1], margin=safety_margin))
+        control2 = (control2[0], road.clamp_to_road(control2[0], control2[1], margin=safety_margin))
+
     path = []
     for i in range(num_points):
         t = i / (num_points - 1)
         point = cubic_bezier(t, start, control1, control2, end)
+
+        # 생성된 포인트도 추가로 도로 경계 내로 제한 (이중 안전장치)
+        if road is not None:
+            x, y = point
+            y_clamped = road.clamp_to_road(x, y, margin=safety_margin)
+            point = (x, y_clamped)
+
         path.append(point)
     return path
 
@@ -91,6 +111,9 @@ class PathPlanner:
         self.target_lane = 2  # 기본 2번 차선
         self.avoidance_path = []
         self.planned_speed = None  # 계획된 속도
+
+        # 포트홀별 회피 결정 저장 (한번 결정되면 유지)
+        self.pothole_decisions = {}  # {pothole_id: {'strategy': str, 'decided_x': float}}
 
         # 회피 파라미터
         self.safe_distance = 150  # 포트홀 감지 후 회피 시작 거리
@@ -241,33 +264,56 @@ class PathPlanner:
             dy = npc.y - self.vehicle.y
             distance = math.sqrt(dx**2 + dy**2)
 
-            # 진행 방향 판단
+            # 차량 좌표계로 변환
             cos_a = math.cos(self.vehicle.angle)
             sin_a = math.sin(self.vehicle.angle)
-            forward_distance = dx * cos_a + dy * sin_a
+            local_x = dx * cos_a + dy * sin_a  # 전방(+) / 후방(-)
+            local_y = dx * sin_a - dy * cos_a  # 좌측(+) / 우측(-)
 
-            # 같은 차선이거나 목표 차선에 있는 NPC만 높은 위험도 부여
+            # 같은 차선이거나 목표 차선에 있는 NPC
             if npc_lane in target_lanes:
-                # 전방 차량만 확인
-                if forward_distance > 0 and distance < 250:
-                    # 거리에 따른 위험도
+                # 전방 및 측면 차량 확인 (후방 제외)
+                if local_x > -VEHICLE_LENGTH and distance < 300:  # 전방 및 측면 범위 확대
+                    # 측면 충돌 위험도 추가 체크
+                    lateral_distance = abs(local_y)
+
+                    # 매우 가까운 거리의 위험도
                     if distance < 80:
                         risk += 1.0
                     elif distance < 120:
-                        risk += 0.6
+                        risk += 0.7
                     elif distance < 180:
-                        risk += 0.3
+                        risk += 0.4
                     elif distance < 250:
+                        risk += 0.2
+                    elif distance < 300:
                         risk += 0.1
+
+                    # 측면 NPC 추가 위험도 (차선 내 회피 시 중요)
+                    if abs(local_x) < VEHICLE_LENGTH * 1.5:  # 거의 나란히
+                        if lateral_distance < VEHICLE_WIDTH * 2:  # 측면 접근
+                            risk += 0.5
 
                     # 상대 속도 고려
                     relative_speed = self.vehicle.speed - npc.speed
                     if relative_speed > 20:
+                        risk += 0.3
+                    elif relative_speed < -20:  # NPC가 더 빠름
                         risk += 0.2
             else:
-                # 다른 차선 NPC: 매우 가까운 경우만 낮은 위험도
-                if distance < 100:
-                    risk += 0.05
+                # 인접 차선 NPC: 측면 충돌 가능성 체크
+                if distance < 150:
+                    # 차선 간 거리 체크
+                    lane_diff = abs(npc_lane - current_lane) if npc_lane else 2
+                    if lane_diff == 1:  # 바로 옆 차선
+                        # 측면 또는 약간 전방/후방에 있는 경우
+                        if abs(local_x) < VEHICLE_LENGTH * 2:
+                            if distance < 80:
+                                risk += 0.4
+                            elif distance < 120:
+                                risk += 0.2
+                            else:
+                                risk += 0.1
 
         return min(risk, 1.0)
 
@@ -384,9 +430,33 @@ class PathPlanner:
         if self.is_emergency_stopped:
             return self._handle_emergency_stop_state()
 
-        # ⚠️ NPC 충돌 임박 확인 (매우 긴급한 경우만)
-        # 차선 내부 회피는 NPC 상관없이 수행 가능하므로, 여기서는 차단하지 않음
-        # ACC가 속도 조절로 NPC 충돌을 방지함
+        # ⚠️ 실시간 충돌 감지 및 긴급 회피
+        if self.traffic_manager is not None:
+            for npc in self.traffic_manager.get_all_vehicles():
+                # SAT 충돌 감지
+                if npc.check_collision_with_vehicle(self.vehicle):
+                    # 즉시 긴급 정지
+                    self.planned_speed = 0
+                    current_lane = self.road.get_current_lane(self.vehicle.x, self.vehicle.y)
+                    if current_lane:
+                        return self.road.get_path_for_lane(current_lane, self.vehicle.x, 1500)
+                    return self._plan_normal_path()
+
+                # 임박한 충돌 예측
+                dx = npc.x - self.vehicle.x
+                dy = npc.y - self.vehicle.y
+                distance = math.sqrt(dx**2 + dy**2)
+
+                # 차량 좌표계로 변환
+                cos_a = math.cos(self.vehicle.angle)
+                sin_a = math.sin(self.vehicle.angle)
+                local_x = dx * cos_a + dy * sin_a
+                local_y = dx * sin_a - dy * cos_a
+
+                # 측면 충돌 임박 체크 (나란히 달리고 있고 측면으로 접근)
+                if abs(local_x) < VEHICLE_LENGTH * 1.2 and abs(local_y) < VEHICLE_WIDTH * 1.5:
+                    # 강제 감속
+                    self.planned_speed = min(self.vehicle.speed * 0.5, npc.speed - 10)
 
         # 전방 예측 범위 내의 모든 포트홀 가져오기
         potholes_in_range = self._get_potholes_in_prediction_range()
@@ -401,12 +471,33 @@ class PathPlanner:
         pothole = primary_pothole_data['pothole']
         distance = primary_pothole_data['distance']
 
-        # 가능한 회피 전략들 평가
-        possible_strategies = self._evaluate_avoidance_strategies(pothole, distance)
+        # 포트홀별 결정 관리 (이미 결정된 포트홀은 전략 유지)
+        pothole_id = pothole.id
 
-        # 비용이 가장 낮은 전략 선택
-        best_strategy = min(possible_strategies, key=lambda x: x['cost'])
-        avoidance_type = best_strategy['type']
+        # 지나간 포트홀 정리 (차량 뒤 200px 이상 떨어진 포트홀)
+        to_remove = []
+        for pid in list(self.pothole_decisions.keys()):
+            decision_data = self.pothole_decisions[pid]
+            if self.vehicle.x > decision_data['decided_x'] + 200:
+                to_remove.append(pid)
+        for pid in to_remove:
+            del self.pothole_decisions[pid]
+
+        # 이미 결정된 포트홀인지 확인
+        if pothole_id in self.pothole_decisions:
+            # 저장된 전략 사용
+            avoidance_type = self.pothole_decisions[pothole_id]['strategy']
+        else:
+            # 새로운 포트홀 - 전략 평가 및 저장
+            possible_strategies = self._evaluate_avoidance_strategies(pothole, distance)
+            best_strategy = min(possible_strategies, key=lambda x: x['cost'])
+            avoidance_type = best_strategy['type']
+
+            # 결정 저장 (PASS_THROUGH 포함 모든 전략)
+            self.pothole_decisions[pothole_id] = {
+                'strategy': avoidance_type,
+                'decided_x': self.vehicle.x
+            }
 
         # 선택된 전략에 따른 경로 및 속도 계획
         if avoidance_type == "PASS_THROUGH":
@@ -839,7 +930,7 @@ class PathPlanner:
 
     def _plan_normal_path(self):
         """
-        정상 주행 경로 (차선 중앙 추종)py
+        정상 주행 경로 (차선 중앙 추종)
 
         Returns:
             list: 경로 포인트
@@ -888,6 +979,9 @@ class PathPlanner:
         exit_distance = 150  # 복귀 시작 거리 (100 -> 150)
         exit_transition = 150  # 복귀 전환 구간 (100 -> 150)
 
+        from config import VEHICLE_WIDTH
+        safety_margin = VEHICLE_WIDTH / 2 + 5  # 차량 반폭 + 안전 마진
+
         for i, (px, py) in enumerate(lane_center_path):
             x_dist = pothole.x - px
 
@@ -907,7 +1001,11 @@ class PathPlanner:
             # max_offset으로 제한하여 차선을 벗어나지 않도록
             actual_clearance = min(required_clearance, max_offset)
             offset = actual_clearance * t * offset_direction
-            path.append((px, py + offset))
+
+            # 도로 경계 내로 제한
+            y_with_offset = py + offset
+            y_clamped = self.road.clamp_to_road(px, y_with_offset, margin=safety_margin)
+            path.append((px, y_clamped))
 
         return path
 
@@ -941,11 +1039,26 @@ class PathPlanner:
         # 회피 파라미터
         from config import TRACK_WIDTH, VEHICLE_WIDTH
         min_margin = 25  # 안전 마진
+        safety_margin = VEHICLE_WIDTH / 2 + 5  # 도로 경계 안전 마진
 
-        # 차선을 밟을 수 있도록 최대 오프셋 설정
-        # 차선 중심에서 경계선까지 거리를 최대로 설정 (차선 밟기 허용)
-        max_offset = self.road.lane_width * 0.45  # 차선폭의 45% (약 45px)
         offset_direction = 1 if avoidance_type == "IN_LANE_RIGHT" else -1
+
+        # 동적으로 최대 오프셋 계산 (도로 경계를 고려)
+        # 포트홀 위치에서 차선 중심과 도로 경계까지의 거리
+        pothole_lane_center = self.road.get_lane_center_at_x(pothole.x, current_lane)
+        if pothole_lane_center:
+            top_boundary, bottom_boundary = self.road.get_road_boundaries(pothole.x)
+
+            # 위로 회피할 때와 아래로 회피할 때 각각 계산
+            if offset_direction == -1:  # 위로 (왼쪽)
+                max_safe_offset = (pothole_lane_center - top_boundary) - safety_margin
+            else:  # 아래로 (오른쪽)
+                max_safe_offset = (bottom_boundary - pothole_lane_center) - safety_margin
+
+            # 최소 10px, 차선폭의 35% 이하로 제한
+            max_offset = max(10, min(max_safe_offset, self.road.lane_width * 0.35))
+        else:
+            max_offset = self.road.lane_width * 0.35
 
         # 필요한 회피 거리 계산
         base_clearance = pothole.radius + (TRACK_WIDTH / 2) + min_margin
@@ -989,28 +1102,28 @@ class PathPlanner:
             seg1 = generate_bezier_path(p0, p1,
                                         (p0[0] + (p1[0] - p0[0]) * 0.5, p0[1]),
                                         (p0[0] + (p1[0] - p0[0]) * 0.5, p1[1]),
-                                        num_points=30)
+                                        num_points=30, road=self.road)
             path.extend(seg1)
 
             # 세그먼트 2: 회피 시작 -> 최대 오프셋
             seg2 = generate_bezier_path(p1, p2,
                                         (p1[0] + (p2[0] - p1[0]) * 0.25, p1[1]),
                                         (p1[0] + (p2[0] - p1[0]) * 0.75, p2[1]),
-                                        num_points=35)
+                                        num_points=35, road=self.road)
             path.extend(seg2)
 
             # 세그먼트 2.5: 최대 오프셋 유지
             seg2_5 = generate_bezier_path(p2, p2_5,
                                           (p2[0] + (p2_5[0] - p2[0]) * 0.5, p2[1]),
                                           (p2[0] + (p2_5[0] - p2[0]) * 0.5, p2_5[1]),
-                                          num_points=15)
+                                          num_points=15, road=self.road)
             path.extend(seg2_5)
 
             # 세그먼트 3: 복귀
             seg3 = generate_bezier_path(p2_5, p3,
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.25, p2_5[1]),
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.75, p3[1]),
-                                        num_points=45)
+                                        num_points=45, road=self.road)
             path.extend(seg3)
 
         elif current_x < peak_x:
@@ -1020,21 +1133,21 @@ class PathPlanner:
             seg2_partial = generate_bezier_path((current_x, current_y_adjusted), p2,
                                                (current_x + (p2[0] - current_x) * 0.25, current_y_adjusted),
                                                (current_x + (p2[0] - current_x) * 0.75, p2[1]),
-                                               num_points=25)
+                                               num_points=25, road=self.road)
             path.extend(seg2_partial)
 
             # 세그먼트 2.5: 최대 오프셋 유지
             seg2_5 = generate_bezier_path(p2, p2_5,
                                           (p2[0] + (p2_5[0] - p2[0]) * 0.5, p2[1]),
                                           (p2[0] + (p2_5[0] - p2[0]) * 0.5, p2_5[1]),
-                                          num_points=15)
+                                          num_points=15, road=self.road)
             path.extend(seg2_5)
 
             # 세그먼트 3: 복귀
             seg3 = generate_bezier_path(p2_5, p3,
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.25, p2_5[1]),
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.75, p3[1]),
-                                        num_points=45)
+                                        num_points=45, road=self.road)
             path.extend(seg3)
 
         elif current_x < p2_5[0]:
@@ -1043,14 +1156,14 @@ class PathPlanner:
             seg2_5_partial = generate_bezier_path((current_x, current_y_adjusted), p2_5,
                                                  (current_x + (p2_5[0] - current_x) * 0.5, current_y_adjusted),
                                                  (current_x + (p2_5[0] - current_x) * 0.5, p2_5[1]),
-                                                 num_points=10)
+                                                 num_points=10, road=self.road)
             path.extend(seg2_5_partial)
 
             # 세그먼트 3: 복귀
             seg3 = generate_bezier_path(p2_5, p3,
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.25, p2_5[1]),
                                         (p2_5[0] + (p3[0] - p2_5[0]) * 0.75, p3[1]),
-                                        num_points=45)
+                                        num_points=45, road=self.road)
             path.extend(seg3)
 
         elif current_x < return_x:
@@ -1059,7 +1172,7 @@ class PathPlanner:
             seg3_partial = generate_bezier_path((current_x, current_y_adjusted), p3,
                                                (current_x + (p3[0] - current_x) * 0.25, current_y_adjusted),
                                                (current_x + (p3[0] - current_x) * 0.75, p3[1]),
-                                               num_points=35)
+                                               num_points=35, road=self.road)
             path.extend(seg3_partial)
 
         else:
@@ -1130,7 +1243,7 @@ class PathPlanner:
                 seg1_start, seg1_end,
                 (seg1_start[0] + (seg1_end[0] - seg1_start[0]) * 0.5, seg1_start[1]),
                 (seg1_start[0] + (seg1_end[0] - seg1_start[0]) * 0.5, seg1_end[1]),
-                num_points=30
+                num_points=30, road=self.road
             )
             path.extend(seg1)
 
@@ -1141,7 +1254,7 @@ class PathPlanner:
             seg2_start, seg2_end,
             (seg2_start[0] + (seg2_end[0] - seg2_start[0]) * 0.4, seg2_start[1]),
             (seg2_start[0] + (seg2_end[0] - seg2_start[0]) * 0.6, seg2_end[1]),
-            num_points=35
+            num_points=35, road=self.road
         )
         path.extend(seg2)
 
@@ -1155,7 +1268,7 @@ class PathPlanner:
                 seg3_start, seg3_end,
                 (seg3_start[0] + (seg3_end[0] - seg3_start[0]) * 0.5, seg3_start[1]),
                 (seg3_start[0] + (seg3_end[0] - seg3_start[0]) * 0.5, seg3_end[1]),
-                num_points=20
+                num_points=20, road=self.road
             )
             path.extend(seg3)
 
@@ -1166,7 +1279,7 @@ class PathPlanner:
             seg4_start, seg4_end,
             (seg4_start[0] + (seg4_end[0] - seg4_start[0]) * 0.4, seg4_start[1]),
             (seg4_start[0] + (seg4_end[0] - seg4_start[0]) * 0.6, seg4_end[1]),
-            num_points=35
+            num_points=35, road=self.road
         )
         path.extend(seg4)
 
