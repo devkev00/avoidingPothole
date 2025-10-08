@@ -146,7 +146,7 @@ class Pothole:
         if pothole_right < left_path_boundary and pothole_left > right_path_boundary:
             # 포트홀이 좌우 바퀴 경로에 걸쳐 있음
             # 중앙에 있으면 통과 가능
-            if abs(local_y) < wheel_gap * 0.15:  # 중앙 50% 범위 (더 관대하게)
+            if abs(local_y) < wheel_gap * 0.3:  # 중앙 30% 범위 (더 관대하게)
                 return True
             else:
                 return False  # 중앙이 아니면 회피 필요
